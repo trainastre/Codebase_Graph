@@ -17,13 +17,14 @@ HTML_CONTENT = """
   <style>
     body { margin: 0; overflow: hidden; font-family: sans-serif; background-color: #000011; }
     #ui { position: absolute; top: 10px; left: 10px; z-index: 10; background: rgba(255,255,255,0.9); padding: 15px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-    input { padding: 8px; width: 300px; border: 1px solid #ccc; border-radius: 4px; }
+    input[type="text"] { padding: 8px; width: 300px; border: 1px solid #ccc; border-radius: 4px; }
     button { padding: 8px 15px; background-color: #0366d6; color: white; border: none; border-radius: 4px; cursor: pointer; }
     button:hover { background-color: #005cc5; }
     #loading { display: none; margin-top: 10px; color: #666; font-size: 14px; }
     .legend { margin-top: 15px; font-size: 12px; }
     .legend-item { display: flex; align-items: center; margin-bottom: 5px; }
     .color-box { width: 12px; height: 12px; margin-right: 8px; border-radius: 2px; }
+    #filters { margin-top: 15px; font-size: 13px; display: flex; flex-direction: column; gap: 5px; }
   </style>
   <script src="https://unpkg.com/3d-force-graph"></script>
 </head>
@@ -34,7 +35,17 @@ HTML_CONTENT = """
     <button onclick="loadGraph()">Visualize</button>
     <div id="loading">Cloning and parsing repository...</div>
     
+    <div id="filters">
+      <strong>Filters:</strong>
+      <label><input type="checkbox" id="showFolders" checked onchange="applyFilters()"> Folders</label>
+      <label><input type="checkbox" id="showFiles" checked onchange="applyFilters()"> Files</label>
+      <label><input type="checkbox" id="showClasses" checked onchange="applyFilters()"> Classes</label>
+      <label><input type="checkbox" id="showMethods" checked onchange="applyFilters()"> Methods/Functions</label>
+      <label><input type="checkbox" id="showModules" checked onchange="applyFilters()"> External Modules</label>
+    </div>
+
     <div class="legend">
+      <div class="legend-item"><div class="color-box" style="background: #ffc107;"></div> Folder</div>
       <div class="legend-item"><div class="color-box" style="background: #ff5722;"></div> File</div>
       <div class="legend-item"><div class="color-box" style="background: #4caf50;"></div> Class</div>
       <div class="legend-item"><div class="color-box" style="background: #2196f3;"></div> Function/Method</div>
@@ -45,6 +56,7 @@ HTML_CONTENT = """
 
   <script>
     const colorMap = {
+      'folder': '#ffc107',
       'file': '#ff5722',
       'class': '#4caf50',
       'function': '#2196f3',
@@ -62,6 +74,8 @@ HTML_CONTENT = """
         .linkCurvature(0.1)
         .linkOpacity(0.3);
 
+    let fullData = { nodes: [], links: [] };
+
     async function loadGraph() {
       const repoUrl = document.getElementById('repoUrl').value;
       if (!repoUrl) return;
@@ -72,8 +86,8 @@ HTML_CONTENT = """
         if (!response.ok) {
           throw new Error(await response.text());
         }
-        const data = await response.json();
-        Graph.graphData(data);
+        fullData = await response.json();
+        applyFilters();
       } catch (err) {
         alert('Error: ' + err.message);
       } finally {
@@ -81,6 +95,64 @@ HTML_CONTENT = """
       }
     }
     
+    function applyFilters() {
+      if (!fullData.nodes.length) return;
+      
+      const showFolders = document.getElementById('showFolders').checked;
+      const showFiles = document.getElementById('showFiles').checked;
+      const showClasses = document.getElementById('showClasses').checked;
+      const showMethods = document.getElementById('showMethods').checked;
+      const showModules = document.getElementById('showModules').checked;
+
+      const allowedGroups = new Set();
+      if (showFolders) allowedGroups.add('folder');
+      if (showFiles) allowedGroups.add('file');
+      if (showClasses) allowedGroups.add('class');
+      if (showMethods) {
+        allowedGroups.add('method');
+        allowedGroups.add('function');
+      }
+      if (showModules) allowedGroups.add('module');
+      allowedGroups.add('unknown');
+
+      const filteredNodes = fullData.nodes.filter(n => allowedGroups.has(n.group));
+      const nodeIds = new Set(filteredNodes.map(n => n.id));
+      
+      const parentMap = {};
+      fullData.links.forEach(l => {
+        const sourceId = typeof l.source === 'object' ? l.source.id : l.source;
+        const targetId = typeof l.target === 'object' ? l.target.id : l.target;
+        if (l.type === 'contains') {
+          parentMap[targetId] = sourceId;
+        }
+      });
+
+      function getVisibleAncestor(nodeId) {
+        let current = parentMap[nodeId];
+        while (current && !nodeIds.has(current)) {
+          current = parentMap[current];
+        }
+        return current;
+      }
+
+      const filteredLinks = [];
+      fullData.links.forEach(l => {
+        const sourceId = typeof l.source === 'object' ? l.source.id : l.source;
+        const targetId = typeof l.target === 'object' ? l.target.id : l.target;
+        
+        if (nodeIds.has(sourceId) && nodeIds.has(targetId)) {
+          filteredLinks.push(l);
+        } else if (nodeIds.has(targetId) && !nodeIds.has(sourceId) && l.type === 'contains') {
+          const visibleAncestor = getVisibleAncestor(targetId);
+          if (visibleAncestor) {
+            filteredLinks.push({ source: visibleAncestor, target: targetId, type: 'contains' });
+          }
+        }
+      });
+
+      Graph.graphData({ nodes: filteredNodes, links: filteredLinks });
+    }
+
     // Load default graph on start
     loadGraph();
   </script>
@@ -140,14 +212,26 @@ async def get_graph(repo_url: str):
         graph = nx.DiGraph()
         
         # Walk the directory and parse Python files
-        for root, _, files in os.walk(temp_dir):
+        for root, dirs, files in os.walk(temp_dir):
             # Skip hidden directories like .git
-            if "/." in root or "\\." in root:
+            if "/." in root or "\\." in root or os.path.basename(root).startswith("."):
                 continue
+                
+            rel_root = os.path.relpath(root, temp_dir)
+            if rel_root != ".":
+                graph.add_node(rel_root, group="folder", id=rel_root)
+                parent = os.path.dirname(rel_root)
+                if parent and parent != "":
+                    graph.add_edge(parent, rel_root, type="contains")
                 
             for file in files:
                 if file.endswith(".py"):
                     filepath = os.path.join(root, file)
+                    rel_path = os.path.relpath(filepath, temp_dir)
+                    
+                    if rel_root != ".":
+                        graph.add_edge(rel_root, rel_path, type="contains")
+                        
                     parse_python_file(filepath, temp_dir, graph)
                     
         # Convert to 3d-force-graph format
