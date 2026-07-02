@@ -65,14 +65,65 @@ HTML_CONTENT = """
       'unknown': '#999999'
     };
 
+    const highlightNodes = new Set();
+    const highlightLinks = new Set();
+    let hoverNode = null;
+
     const Graph = ForceGraph3D()
       (document.getElementById('3d-graph'))
-        .nodeColor(node => colorMap[node.group] || colorMap['unknown'])
+        .nodeColor(node => {
+          if (highlightNodes.has(node)) {
+            return node === hoverNode ? 'rgb(255,0,0,1)' : 'rgba(255,160,0,0.8)';
+          }
+          return colorMap[node.group] || colorMap['unknown'];
+        })
+        .linkWidth(link => highlightLinks.has(link) ? 2 : 1)
+        .linkDirectionalParticles(link => highlightLinks.has(link) ? 4 : 0)
+        .linkDirectionalParticleWidth(4)
         .nodeLabel('id')
         .linkDirectionalArrowLength(3.5)
         .linkDirectionalArrowRelPos(1)
         .linkCurvature(0.1)
-        .linkOpacity(0.3);
+        .linkOpacity(0.3)
+        .onNodeHover(node => {
+          if ((!node && !highlightNodes.size) || (node && hoverNode === node)) return;
+
+          highlightNodes.clear();
+          highlightLinks.clear();
+          if (node) {
+            highlightNodes.add(node);
+            const { links } = Graph.graphData();
+            links.forEach(link => {
+              if (link.source.id === node.id || link.target.id === node.id) {
+                highlightLinks.add(link);
+                highlightNodes.add(link.source);
+                highlightNodes.add(link.target);
+              }
+            });
+          }
+
+          hoverNode = node || null;
+          updateHighlight();
+        })
+        .onNodeClick(node => {
+          // Aim at node from outside it
+          const distance = 100;
+          const distRatio = 1 + distance/Math.hypot(node.x, node.y, node.z);
+
+          Graph.cameraPosition(
+            { x: node.x * distRatio, y: node.y * distRatio, z: node.z * distRatio }, // new position
+            node, // lookAt ({ x, y, z })
+            2000  // ms transition duration
+          );
+        });
+
+    function updateHighlight() {
+      // trigger update of highlighted objects in scene
+      Graph
+        .nodeColor(Graph.nodeColor())
+        .linkWidth(Graph.linkWidth())
+        .linkDirectionalParticles(Graph.linkDirectionalParticles());
+    }
 
     let fullData = { nodes: [], links: [] };
 
