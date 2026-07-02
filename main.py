@@ -18,7 +18,7 @@ HTML_CONTENT = """
   <style>
     body { margin: 0; overflow: hidden; font-family: sans-serif; background-color: #000011; color: white; }
     #ui { position: absolute; top: 10px; left: 10px; z-index: 10; background: rgba(30,30,30,0.9); padding: 15px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); max-height: 90vh; overflow-y: auto; }
-    input[type="text"] { padding: 8px; width: 300px; border: 1px solid #555; border-radius: 4px; background: #222; color: white; }
+    input[type="text"] { padding: 8px; width: 300px; border: 1px solid #555; border-radius: 4px; background: #222; color: white; margin-bottom: 5px; }
     button { padding: 8px 15px; background-color: #0366d6; color: white; border: none; border-radius: 4px; cursor: pointer; }
     button:hover { background-color: #005cc5; }
     #loading { display: none; margin-top: 10px; color: #aaa; font-size: 14px; }
@@ -26,14 +26,22 @@ HTML_CONTENT = """
     .legend-item { display: flex; align-items: center; margin-bottom: 5px; }
     .color-box { width: 12px; height: 12px; margin-right: 8px; border-radius: 2px; }
     #filters { margin-top: 15px; font-size: 13px; display: flex; flex-direction: column; gap: 5px; }
+    .search-container { margin-top: 10px; display: flex; gap: 5px; }
+    .search-container input { width: 220px; margin-bottom: 0; }
   </style>
   <script src="https://unpkg.com/3d-force-graph"></script>
 </head>
 <body>
   <div id="ui">
     <h3 style="margin-top: 0;">Codebase Graph</h3>
-    <input type="text" id="repoUrl" placeholder="https://github.com/owner/repo" value="https://github.com/trainastre/Codebase_Graph" />
-    <button onclick="loadGraph()">Visualize</button>
+    <div>
+      <input type="text" id="repoUrl" placeholder="https://github.com/owner/repo" value="https://github.com/trainastre/Codebase_Graph" />
+      <button onclick="loadGraph()">Visualize</button>
+    </div>
+    <div class="search-container">
+      <input type="text" id="searchNode" placeholder="Search node by name..." onkeyup="searchNode(event)" />
+      <button onclick="executeSearch()">Search</button>
+    </div>
     <div id="loading">Cloning and parsing repository...</div>
     
     <div id="filters">
@@ -97,10 +105,19 @@ HTML_CONTENT = """
           }
           return colorMap[node.group] || colorMap['unknown'];
         })
+        .nodeVal('val')
         .linkWidth(link => highlightLinks.has(link) ? 2 : 1)
         .linkDirectionalParticles(link => highlightLinks.has(link) ? 4 : 0)
         .linkDirectionalParticleWidth(4)
-        .nodeLabel('id')
+        .nodeLabel(node => {
+          return `
+            <div style="background: rgba(0,0,0,0.8); padding: 8px; border-radius: 4px; font-size: 12px;">
+              <strong style="color: #fff;">${node.id}</strong><br/>
+              <span style="color: #aaa;">Type:</span> ${node.group}<br/>
+              <span style="color: #aaa;">Connections:</span> ${node.degree || 0}
+            </div>
+          `;
+        })
         .linkColor(link => link.circular ? 'red' : (linkColorMap[link.type] || 'rgba(255,255,255,0.4)'))
         .linkDirectionalArrowLength(3.5)
         .linkDirectionalArrowRelPos(1)
@@ -136,6 +153,14 @@ HTML_CONTENT = """
             node, // lookAt ({ x, y, z })
             2000  // ms transition duration
           );
+          
+          // Open GitHub URL
+          if (['file', 'class', 'function', 'method'].includes(node.group)) {
+            const repoUrl = document.getElementById('repoUrl').value.replace(/\\/$/, '');
+            const relPath = node.id.split('::')[0];
+            const githubUrl = `${repoUrl}/blob/HEAD/${relPath}`;
+            window.open(githubUrl, '_blank');
+          }
         });
 
     function updateHighlight() {
@@ -144,6 +169,51 @@ HTML_CONTENT = """
         .nodeColor(Graph.nodeColor())
         .linkWidth(Graph.linkWidth())
         .linkDirectionalParticles(Graph.linkDirectionalParticles());
+    }
+
+    function executeSearch() {
+      const query = document.getElementById('searchNode').value.toLowerCase();
+      if (!query) return;
+      
+      const { nodes } = Graph.graphData();
+      const foundNode = nodes.find(n => n.id.toLowerCase().includes(query));
+      
+      if (foundNode) {
+        // Highlight
+        highlightNodes.clear();
+        highlightLinks.clear();
+        highlightNodes.add(foundNode);
+        
+        const { links } = Graph.graphData();
+        links.forEach(link => {
+          if (link.source.id === foundNode.id || link.target.id === foundNode.id) {
+            highlightLinks.add(link);
+            highlightNodes.add(link.source);
+            highlightNodes.add(link.target);
+          }
+        });
+        
+        hoverNode = foundNode;
+        updateHighlight();
+        
+        // Center camera
+        const distance = 100;
+        const distRatio = 1 + distance/Math.hypot(foundNode.x, foundNode.y, foundNode.z);
+
+        Graph.cameraPosition(
+          { x: foundNode.x * distRatio, y: foundNode.y * distRatio, z: foundNode.z * distRatio },
+          foundNode,
+          2000
+        );
+      } else {
+        alert('Node not found');
+      }
+    }
+    
+    function searchNode(event) {
+      if (event.key === 'Enter') {
+        executeSearch();
+      }
     }
 
     let fullData = { nodes: [], links: [] };
@@ -233,6 +303,21 @@ HTML_CONTENT = """
             filteredLinks.push({ source: visibleAncestor, target: targetId, type: 'contains', circular: l.circular });
           }
         }
+      });
+
+      // Calculate degree for node size
+      const degreeMap = {};
+      filteredNodes.forEach(n => degreeMap[n.id] = 0);
+      filteredLinks.forEach(l => {
+        const sourceId = typeof l.source === 'object' ? l.source.id : l.source;
+        const targetId = typeof l.target === 'object' ? l.target.id : l.target;
+        if (degreeMap[sourceId] !== undefined) degreeMap[sourceId]++;
+        if (degreeMap[targetId] !== undefined) degreeMap[targetId]++;
+      });
+      
+      filteredNodes.forEach(n => {
+        n.degree = degreeMap[n.id] || 0;
+        n.val = Math.max(1, n.degree); // Scale size appropriately
       });
 
       Graph.graphData({ nodes: filteredNodes, links: filteredLinks });
