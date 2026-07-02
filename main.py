@@ -1,11 +1,12 @@
 import os
-import ast
 import tempfile
 import subprocess
 import shutil
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 import networkx as nx
+
+from parsers import parse_file
 
 app = FastAPI()
 
@@ -164,41 +165,6 @@ HTML_CONTENT = """
 async def get_index():
     return HTML_CONTENT
 
-def parse_python_file(filepath, base_dir, graph):
-    rel_path = os.path.relpath(filepath, base_dir)
-    graph.add_node(rel_path, group="file", id=rel_path)
-    
-    try:
-        with open(filepath, "r", encoding="utf-8") as f:
-            content = f.read()
-        tree = ast.parse(content)
-    except Exception:
-        return
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                graph.add_node(alias.name, group="module", id=alias.name)
-                graph.add_edge(rel_path, alias.name, type="imports")
-        elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                graph.add_node(node.module, group="module", id=node.module)
-                graph.add_edge(rel_path, node.module, type="imports")
-        elif isinstance(node, ast.ClassDef):
-            class_id = f"{rel_path}::{node.name}"
-            graph.add_node(class_id, group="class", id=class_id)
-            graph.add_edge(rel_path, class_id, type="contains")
-            for item in node.body:
-                if isinstance(item, ast.FunctionDef):
-                    func_id = f"{class_id}::{item.name}"
-                    graph.add_node(func_id, group="method", id=func_id)
-                    graph.add_edge(class_id, func_id, type="contains")
-        elif isinstance(node, ast.FunctionDef):
-            # Top level function
-            func_id = f"{rel_path}::{node.name}"
-            graph.add_node(func_id, group="function", id=func_id)
-            graph.add_edge(rel_path, func_id, type="contains")
-
 @app.get("/api/graph")
 async def get_graph(repo_url: str):
     if not repo_url.startswith("https://github.com/"):
@@ -211,7 +177,7 @@ async def get_graph(repo_url: str):
         
         graph = nx.DiGraph()
         
-        # Walk the directory and parse Python files
+        # Walk the directory and parse files
         for root, dirs, files in os.walk(temp_dir):
             # Skip hidden directories like .git
             if "/." in root or "\\." in root or os.path.basename(root).startswith("."):
@@ -225,17 +191,15 @@ async def get_graph(repo_url: str):
                     graph.add_edge(parent, rel_root, type="contains")
                 
             for file in files:
-                if file.endswith(".py"):
-                    filepath = os.path.join(root, file)
-                    rel_path = os.path.relpath(filepath, temp_dir)
-                    
+                filepath = os.path.join(root, file)
+                rel_path = os.path.relpath(filepath, temp_dir)
+                
+                if parse_file(filepath, temp_dir, graph):
                     if rel_root != ".":
                         graph.add_edge(rel_root, rel_path, type="contains")
-                        
-                    parse_python_file(filepath, temp_dir, graph)
                     
         # Convert to 3d-force-graph format
-        nodes = [{"id": n, "group": d.get("group", "unknown")} for n, d in graph.nodes(data=True)]
+        nodes = [{"id": n, "group": d.get("group", "unknown"), "lang": d.get("lang", "unknown")} for n, d in graph.nodes(data=True)]
         links = [{"source": u, "target": v, "type": d.get("type", "")} for u, v, d in graph.edges(data=True)]
         
         return {"nodes": nodes, "links": links}
