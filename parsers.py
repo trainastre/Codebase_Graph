@@ -2,6 +2,66 @@ import os
 import ast
 import re
 
+class PythonCodeVisitor(ast.NodeVisitor):
+    def __init__(self, rel_path, graph):
+        self.rel_path = rel_path
+        self.graph = graph
+        self.current_scope = [rel_path]
+
+    def visit_Import(self, node):
+        for alias in node.names:
+            self.graph.add_node(alias.name, group="module", id=alias.name, lang="python")
+            self.graph.add_edge(self.rel_path, alias.name, type="imports")
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node):
+        if node.module:
+            self.graph.add_node(node.module, group="module", id=node.module, lang="python")
+            self.graph.add_edge(self.rel_path, node.module, type="imports")
+        self.generic_visit(node)
+
+    def visit_ClassDef(self, node):
+        class_id = f"{self.rel_path}::{node.name}"
+        self.graph.add_node(class_id, group="class", id=class_id, lang="python")
+        self.graph.add_edge(self.current_scope[-1], class_id, type="contains")
+        
+        for base in node.bases:
+            base_name = None
+            if isinstance(base, ast.Name):
+                base_name = base.id
+            elif isinstance(base, ast.Attribute):
+                base_name = base.attr
+            if base_name:
+                self.graph.add_node(base_name, group="class", id=base_name, lang="python")
+                self.graph.add_edge(class_id, base_name, type="extends")
+
+        self.current_scope.append(class_id)
+        self.generic_visit(node)
+        self.current_scope.pop()
+
+    def visit_FunctionDef(self, node):
+        func_id = f"{self.current_scope[-1]}::{node.name}"
+        group = "method" if "::" in self.current_scope[-1] else "function"
+        self.graph.add_node(func_id, group=group, id=func_id, lang="python")
+        self.graph.add_edge(self.current_scope[-1], func_id, type="contains")
+        
+        self.current_scope.append(func_id)
+        self.generic_visit(node)
+        self.current_scope.pop()
+
+    def visit_Call(self, node):
+        func_name = None
+        if isinstance(node.func, ast.Name):
+            func_name = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            func_name = node.func.attr
+            
+        if func_name:
+            self.graph.add_node(func_name, group="function", id=func_name, lang="python")
+            self.graph.add_edge(self.current_scope[-1], func_name, type="calls")
+            
+        self.generic_visit(node)
+
 def parse_python_file(filepath, base_dir, graph):
     rel_path = os.path.relpath(filepath, base_dir)
     graph.add_node(rel_path, group="file", id=rel_path, lang="python")
@@ -13,28 +73,8 @@ def parse_python_file(filepath, base_dir, graph):
     except Exception:
         return True
 
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                graph.add_node(alias.name, group="module", id=alias.name, lang="python")
-                graph.add_edge(rel_path, alias.name, type="imports")
-        elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                graph.add_node(node.module, group="module", id=node.module, lang="python")
-                graph.add_edge(rel_path, node.module, type="imports")
-        elif isinstance(node, ast.ClassDef):
-            class_id = f"{rel_path}::{node.name}"
-            graph.add_node(class_id, group="class", id=class_id, lang="python")
-            graph.add_edge(rel_path, class_id, type="contains")
-            for item in node.body:
-                if isinstance(item, ast.FunctionDef):
-                    func_id = f"{class_id}::{item.name}"
-                    graph.add_node(func_id, group="method", id=func_id, lang="python")
-                    graph.add_edge(class_id, func_id, type="contains")
-        elif isinstance(node, ast.FunctionDef):
-            func_id = f"{rel_path}::{node.name}"
-            graph.add_node(func_id, group="function", id=func_id, lang="python")
-            graph.add_edge(rel_path, func_id, type="contains")
+    visitor = PythonCodeVisitor(rel_path, graph)
+    visitor.visit(tree)
             
     return True
 
