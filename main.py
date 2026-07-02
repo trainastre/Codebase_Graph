@@ -1,11 +1,12 @@
 import os
-import ast
 import tempfile
 import subprocess
 import shutil
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 import networkx as nx
+
+from parsers import parse_file
 
 app = FastAPI()
 
@@ -283,7 +284,7 @@ async def get_graph(repo_url: str):
         
         graph = nx.DiGraph()
         
-        # Walk the directory and parse Python files
+        # Walk the directory and parse files
         for root, dirs, files in os.walk(temp_dir):
             # Skip hidden directories like .git
             if "/." in root or "\\." in root or os.path.basename(root).startswith("."):
@@ -297,14 +298,12 @@ async def get_graph(repo_url: str):
                     graph.add_edge(parent, rel_root, type="contains")
                 
             for file in files:
-                if file.endswith(".py"):
-                    filepath = os.path.join(root, file)
-                    rel_path = os.path.relpath(filepath, temp_dir)
-                    
+                filepath = os.path.join(root, file)
+                rel_path = os.path.relpath(filepath, temp_dir)
+                
+                if parse_file(filepath, temp_dir, graph):
                     if rel_root != ".":
                         graph.add_edge(rel_root, rel_path, type="contains")
-                        
-                    parse_python_file(filepath, temp_dir, graph)
                     
         # Detect circular dependencies
         for node in list(graph.nodes()):
