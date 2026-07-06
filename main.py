@@ -1,4 +1,5 @@
 import os
+import ast
 import tempfile
 import subprocess
 import shutil
@@ -444,7 +445,7 @@ async def get_graph(repo_url: str):
         # Detect circular dependencies
         for node in list(graph.nodes()):
             try:
-                cycle_edges = nx.find_cycle(graph, source=node, orientation="directed")
+                cycle_edges = nx.find_cycle(graph, source=node)
                 for u, v, _ in cycle_edges:
                     if graph.has_edge(u, v):
                         graph[u][v]['circular'] = True
